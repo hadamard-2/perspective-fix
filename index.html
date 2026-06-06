@@ -2946,6 +2946,9 @@
                         linesHtml += '<line x1="' + points[i].x + '" y1="' + points[i].y +
                             '" x2="' + points[next].x + '" y2="' + points[next].y +
                             '" stroke="' + color + '" stroke-width="2" stroke-dasharray="5,4"/>';
+                        linesHtml += '<line class="edge-handle" data-edge="' + i + '" x1="' + points[i].x + '" y1="' + points[i].y +
+                            '" x2="' + points[next].x + '" y2="' + points[next].y +
+                            '" stroke="transparent" stroke-width="30" style="pointer-events: stroke; cursor: grab;"/>';
                     }
 
                     quadSvg.innerHTML =
@@ -3068,7 +3071,7 @@
                     );
 
                     // Draw crosshair in lens center
-                    lensCtx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+                    lensCtx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
                     lensCtx.lineWidth = 1;
                     lensCtx.beginPath();
                     lensCtx.moveTo(radius, 0);
@@ -3448,7 +3451,11 @@
                     format = format || 'png';
                     var extension = format === 'jpg' ? 'jpg' : 'png';
                     var mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png';
-                    var filename = 'perspectivefix-corrected.' + extension;
+
+                    var origName = FileHandler.getFileName() || 'image';
+                    var lastDotIdx = origName.lastIndexOf('.');
+                    var baseName = lastDotIdx !== -1 ? origName.substring(0, lastDotIdx) : origName;
+                    var filename = baseName + '-CORRECTED.' + extension;
 
                     var quality;
                     if (format === 'jpg') {
@@ -3541,10 +3548,22 @@
                 var lastDragUpdateTime = 0;
                 var previewTimer = null;
 
+                // Edge drag state
+                var edgeDragging = false;
+                var edgeDragIdx = -1;
+                var edgeMouseStart = { x: 0, y: 0 };
+                var edgePtsStart = [];
+
                 function init() {
                     QuadRenderer.init();
                     ImageProcessor.init();
                     ZoomLens.init();
+
+                    var quadSvg = DOM.get('quadSvg');
+                    if (quadSvg) {
+                        quadSvg.addEventListener('mousedown', startEdgeDrag);
+                        quadSvg.addEventListener('touchstart', startEdgeDrag, { passive: false });
+                    }
                 }
 
                 /**
@@ -3718,6 +3737,111 @@
                     document.removeEventListener('mouseup', stopDrag);
                     document.removeEventListener('touchmove', onDrag, { passive: false });
                     document.removeEventListener('touchend', stopDrag);
+
+                    updatePreview();
+                }
+
+                function startEdgeDrag(e) {
+                    var target = e.target;
+                    var cls = target.getAttribute('class') || '';
+                    if (cls.indexOf('edge-handle') === -1) return;
+
+                    e.preventDefault();
+                    edgeDragging = true;
+                    edgeDragIdx = parseInt(target.getAttribute('data-edge'), 10);
+
+                    edgePtsStart = Utils.deepClone(pts);
+
+                    var canvas = CanvasManager.srcCanvas;
+                    var rect = canvas.getBoundingClientRect();
+                    var clientX, clientY;
+
+                    if (e.touches && e.touches.length > 0) {
+                        clientX = e.touches[0].clientX;
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        clientX = e.clientX;
+                        clientY = e.clientY;
+                    }
+
+                    edgeMouseStart = {
+                        x: clientX - rect.left,
+                        y: clientY - rect.top
+                    };
+
+                    document.addEventListener('mousemove', onEdgeDrag);
+                    document.addEventListener('mouseup', stopEdgeDrag);
+                    document.addEventListener('touchmove', onEdgeDrag, { passive: false });
+                    document.addEventListener('touchend', stopEdgeDrag);
+                }
+
+                function onEdgeDrag(e) {
+                    if (!edgeDragging || edgeDragIdx < 0) return;
+                    e.preventDefault();
+
+                    var canvas = CanvasManager.srcCanvas;
+                    var rect = canvas.getBoundingClientRect();
+                    var clientX, clientY;
+
+                    if (e.touches && e.touches.length > 0) {
+                        clientX = e.touches[0].clientX;
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        clientX = e.clientX;
+                        clientY = e.clientY;
+                    }
+
+                    var currX = clientX - rect.left;
+                    var currY = clientY - rect.top;
+                    var dx = currX - edgeMouseStart.x;
+                    var dy = currY - edgeMouseStart.y;
+
+                    var p1Idx = edgeDragIdx;
+                    var p2Idx = (edgeDragIdx + 1) % 4;
+
+                    // Restrict movement based on edge orientation
+                    if (edgeDragIdx === 0 || edgeDragIdx === 2) {
+                        dx = 0; // Top/bottom edges move only vertically
+                    } else if (edgeDragIdx === 1 || edgeDragIdx === 3) {
+                        dy = 0; // Left/right edges move only horizontally
+                    }
+
+                    var minX = -Math.min(edgePtsStart[p1Idx].x, edgePtsStart[p2Idx].x);
+                    var maxX = canvas.width - Math.max(edgePtsStart[p1Idx].x, edgePtsStart[p2Idx].x);
+                    var minY = -Math.min(edgePtsStart[p1Idx].y, edgePtsStart[p2Idx].y);
+                    var maxY = canvas.height - Math.max(edgePtsStart[p1Idx].y, edgePtsStart[p2Idx].y);
+
+                    dx = Utils.clamp(dx, minX, maxX);
+                    dy = Utils.clamp(dy, minY, maxY);
+
+                    pts[p1Idx].x = edgePtsStart[p1Idx].x + dx;
+                    pts[p1Idx].y = edgePtsStart[p1Idx].y + dy;
+                    pts[p2Idx].x = edgePtsStart[p2Idx].x + dx;
+                    pts[p2Idx].y = edgePtsStart[p2Idx].y + dy;
+
+                    QuadRenderer.updateCornerPosition(p1Idx, pts[p1Idx].x, pts[p1Idx].y, canvas.width, canvas.height);
+                    QuadRenderer.updateCornerPosition(p2Idx, pts[p2Idx].x, pts[p2Idx].y, canvas.width, canvas.height);
+                    QuadRenderer.renderQuad(pts);
+
+                    UI.hideError();
+
+                    if (!rafPending) {
+                        rafPending = true;
+                        requestAnimationFrame(function () {
+                            rafPending = false;
+                            updatePreview();
+                        });
+                    }
+                }
+
+                function stopEdgeDrag() {
+                    edgeDragging = false;
+                    edgeDragIdx = -1;
+
+                    document.removeEventListener('mousemove', onEdgeDrag);
+                    document.removeEventListener('mouseup', stopEdgeDrag);
+                    document.removeEventListener('touchmove', onEdgeDrag, { passive: false });
+                    document.removeEventListener('touchend', stopEdgeDrag);
 
                     updatePreview();
                 }
