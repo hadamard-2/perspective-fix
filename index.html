@@ -105,13 +105,20 @@
             <div id="cropTabs" class="crop-tabs" role="tablist" aria-label="Crop regions"></div>
 
             <div class="editor-stack">
-                <div class="panel panel-edit">
+                <div class="panel panel-edit" id="editPanel">
                     <div class="panel-header">
                         <div class="panel-title">
                             <span class="icon icon-cursor-drag"></span>
                             <span>Drag the corners to mark what should be straight</span>
                         </div>
-                        <span id="origDim" class="dim-badge" aria-label="Original image dimensions">—</span>
+                        <div class="panel-actions">
+                            <span id="origDim" class="dim-badge" aria-label="Original image dimensions">—</span>
+                            <button id="fullscreenBtn" class="icon-btn" type="button" title="Full screen (F)"
+                                aria-label="Toggle full screen edit view">
+                                <span class="icon icon-fullscreen"></span>
+                                <span class="icon icon-fullscreen-exit"></span>
+                            </button>
+                        </div>
                     </div>
                     <div class="panel-body" id="origContainer">
                         <div class="canvas-wrap" id="canvasWrap">
@@ -120,6 +127,7 @@
                             <div id="corners" aria-label="Draggable corner handles"></div>
                         </div>
                     </div>
+                    <div id="zoomLens" class="zoom-lens" aria-hidden="true"></div>
                 </div>
 
                 <div class="panel panel-results">
@@ -136,8 +144,6 @@
             </div>
         </section>
     </main>
-
-    <div id="zoomLens" class="zoom-lens" aria-hidden="true"></div>
 
     <script src="script.js"></script>
 </body>

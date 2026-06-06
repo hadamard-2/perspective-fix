@@ -177,7 +177,8 @@
             'quadSvg', 'corners', 'origDim',
             'newBtn', 'resetBtn', 'rotateBtn', 'addCropBtn', 'downloadBtn',
             'downloadIcon', 'downloadText', 'formatSelect', 'origContainer',
-            'canvasWrap', 'cropTabs', 'previewCards', 'zoomLens'
+            'canvasWrap', 'cropTabs', 'previewCards', 'zoomLens',
+            'editPanel', 'fullscreenBtn'
         ];
 
         var criticalIds = [
@@ -2008,6 +2009,12 @@
         var rotateStartAngle = 0;
         var rotatePtsStart = [];
 
+        function isFullscreen() {
+            var el = DOM.get('editPanel');
+            var native = document.fullscreenElement || document.webkitFullscreenElement;
+            return !!native || (el && el.classList.contains('is-fullscreen'));
+        }
+
         function activeCrop() {
             return crops[activeIdx] || null;
         }
@@ -2082,9 +2089,13 @@
                 containerHeight = window.innerHeight * 0.5;
             }
 
+            // In fullscreen the edit area owns the whole screen, so let the image
+            // use most of the viewport height instead of the usual 50% cap.
+            var heightRatio = isFullscreen() ? 0.92 : Config.MAX_HEIGHT_VIEWPORT_RATIO;
+
             // Apply padding
             var maxW = Math.max(Config.MIN_CANVAS_SIZE, containerWidth - 32);
-            var maxH = Math.max(Config.MIN_CANVAS_SIZE, Math.min(containerHeight, window.innerHeight * 0.5));
+            var maxH = Math.max(Config.MIN_CANVAS_SIZE, Math.min(containerHeight, window.innerHeight * heightRatio));
 
             // Calculate scale
             var imgScale = Math.min(maxW / img.width, maxH / img.height, 1);
@@ -2890,9 +2901,91 @@
             bindButtons();
             bindKeyboard();
             bindResize();
+            bindFullscreen();
             bindGlobalErrors();
             bindContextMenu();
             bindUnload();
+        }
+
+        function bindFullscreen() {
+            var btn = DOM.get('fullscreenBtn');
+            var panel = DOM.get('editPanel');
+            if (!btn || !panel) return;
+
+            function nativeEl() {
+                return document.fullscreenElement || document.webkitFullscreenElement || null;
+            }
+            function supportsNative() {
+                return !!(panel.requestFullscreen || panel.webkitRequestFullscreen);
+            }
+            function isOpen() {
+                return nativeEl() === panel || panel.classList.contains('is-fullscreen');
+            }
+
+            function cssEnter() {
+                panel.classList.add('is-fullscreen');
+                afterChange();
+            }
+            function enter() {
+                if (supportsNative()) {
+                    try {
+                        var req = panel.requestFullscreen
+                            ? panel.requestFullscreen()
+                            : panel.webkitRequestFullscreen();
+                        if (req && typeof req.catch === 'function') {
+                            req.catch(function () { cssEnter(); }); // fall back if blocked
+                        }
+                    } catch (e) {
+                        cssEnter();
+                    }
+                } else {
+                    cssEnter();
+                }
+            }
+            function exit() {
+                if (nativeEl() === panel) {
+                    var fn = document.exitFullscreen || document.webkitExitFullscreen;
+                    if (fn) fn.call(document);
+                } else if (panel.classList.contains('is-fullscreen')) {
+                    panel.classList.remove('is-fullscreen');
+                    afterChange();
+                }
+            }
+            function toggle() {
+                if (isOpen()) exit(); else enter();
+            }
+
+            function afterChange() {
+                var open = isOpen();
+                btn.classList.toggle('active', open);
+                btn.setAttribute('aria-label', open ? 'Exit full screen edit view' : 'Toggle full screen edit view');
+                btn.title = open ? 'Exit full screen (F)' : 'Full screen (F)';
+                A11y.announce(open ? 'Entered full screen' : 'Exited full screen');
+                // Let the new layout settle, then resize the canvas to fit it.
+                requestAnimationFrame(function () {
+                    requestAnimationFrame(function () {
+                        if (Editor.isActive()) Editor.handleResize();
+                    });
+                });
+            }
+
+            DOM.on(btn, 'click', toggle);
+            DOM.on(document, 'fullscreenchange', afterChange);
+            DOM.on(document, 'webkitfullscreenchange', afterChange);
+
+            DOM.on(document, 'keydown', function (e) {
+                if (!e.key || !Editor.isActive()) return;
+                var ae = document.activeElement;
+                var tn = ae ? ae.tagName : '';
+                var isInput = tn === 'INPUT' || tn === 'TEXTAREA' || tn === 'SELECT';
+
+                if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
+                    e.preventDefault();
+                    toggle();
+                } else if (e.key === 'Escape' && panel.classList.contains('is-fullscreen')) {
+                    exit(); // native handles its own Esc; this covers the CSS fallback
+                }
+            });
         }
 
         function bindTheme() {
