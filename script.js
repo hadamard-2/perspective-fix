@@ -1316,6 +1316,24 @@
             quadSvg.style.height = height + 'px';
         }
 
+        var ROTATE_HANDLE_OFFSET = 30;
+
+        // A stalk + circle extending outward from the top-right corner.
+        function rotateHandleMarkup(points, color) {
+            var cx = (points[0].x + points[1].x + points[2].x + points[3].x) / 4;
+            var cy = (points[0].y + points[1].y + points[2].y + points[3].y) / 4;
+            var tr = points[1];
+            var dx = tr.x - cx, dy = tr.y - cy;
+            var len = Math.sqrt(dx * dx + dy * dy) || 1;
+            var hx = tr.x + (dx / len) * ROTATE_HANDLE_OFFSET;
+            var hy = tr.y + (dy / len) * ROTATE_HANDLE_OFFSET;
+
+            return '<line x1="' + tr.x + '" y1="' + tr.y + '" x2="' + hx + '" y2="' + hy +
+                '" stroke="' + color + '" stroke-width="2" style="pointer-events: none;"/>' +
+                '<circle class="rotate-handle" cx="' + hx + '" cy="' + hy + '" r="7" fill="#ffffff" stroke="' +
+                color + '" stroke-width="2.5" style="pointer-events: all; cursor: grab;"/>';
+        }
+
         function quadMarkup(points, color, isActive, cropIdx) {
             if (points.length !== 4) return '';
 
@@ -1328,6 +1346,9 @@
             if (isActive) {
                 markup += '<polygon points="' + pointsStr + '" fill="' + color +
                     '" fill-opacity="0.12" stroke="' + color + '" stroke-width="2"/>';
+                // Interior grab area to move the whole quad (below edges so edges win near borders)
+                markup += '<polygon class="move-handle" points="' + pointsStr +
+                    '" fill="' + color + '" fill-opacity="0" style="pointer-events: fill; cursor: move;"/>';
                 for (var i = 0; i < 4; i++) {
                     var next = (i + 1) % 4;
                     markup += '<line x1="' + points[i].x + '" y1="' + points[i].y +
@@ -1337,6 +1358,7 @@
                         '" x2="' + points[next].x + '" y2="' + points[next].y +
                         '" stroke="transparent" stroke-width="30" style="pointer-events: stroke; cursor: grab;"/>';
                 }
+                markup += rotateHandleMarkup(points, color);
             } else {
                 // Dimmed visual outline (non-interactive)…
                 markup += '<polygon points="' + pointsStr +
@@ -1975,6 +1997,17 @@
         var edgeMouseStart = { x: 0, y: 0 };
         var edgePtsStart = [];
 
+        // Whole-quad move state
+        var movingQuad = false;
+        var moveMouseStart = { x: 0, y: 0 };
+        var movePtsStart = [];
+
+        // Arbitrary-rotation state
+        var rotating = false;
+        var rotateCenter = { x: 0, y: 0 };
+        var rotateStartAngle = 0;
+        var rotatePtsStart = [];
+
         function activeCrop() {
             return crops[activeIdx] || null;
         }
@@ -2247,6 +2280,20 @@
             updatePreview();
         }
 
+        // Pointer position relative to the source canvas.
+        function pointerPos(e) {
+            var rect = CanvasManager.srcCanvas.getBoundingClientRect();
+            var clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
         function startEdgeDrag(e) {
             var target = e.target;
             var cls = target.getAttribute('class') || '';
@@ -2256,6 +2303,18 @@
                 e.preventDefault();
                 var cropIdx = parseInt(target.getAttribute('data-crop'), 10);
                 if (!isNaN(cropIdx)) setActiveCrop(cropIdx);
+                return;
+            }
+
+            // Rotation handle near the top-right corner.
+            if (cls.indexOf('rotate-handle') !== -1) {
+                startRotate(e);
+                return;
+            }
+
+            // Interior grab → move the whole quad.
+            if (cls.indexOf('move-handle') !== -1) {
+                startQuadMove(e);
                 return;
             }
 
@@ -2359,6 +2418,129 @@
             document.removeEventListener('touchmove', onEdgeDrag, { passive: false });
             document.removeEventListener('touchend', stopEdgeDrag);
 
+            updatePreview();
+        }
+
+        // ---- Move the whole quad ----
+        function startQuadMove(e) {
+            if (!activeCrop()) return;
+            e.preventDefault();
+            movingQuad = true;
+            movePtsStart = Utils.deepClone(activePts());
+            moveMouseStart = pointerPos(e);
+
+            document.addEventListener('mousemove', onQuadMove);
+            document.addEventListener('mouseup', stopQuadMove);
+            document.addEventListener('touchmove', onQuadMove, { passive: false });
+            document.addEventListener('touchend', stopQuadMove);
+        }
+
+        function onQuadMove(e) {
+            if (!movingQuad) return;
+            e.preventDefault();
+
+            var canvas = CanvasManager.srcCanvas;
+            var pos = pointerPos(e);
+            var dx = pos.x - moveMouseStart.x;
+            var dy = pos.y - moveMouseStart.y;
+
+            // Clamp the translation so every corner stays within the canvas.
+            var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (var i = 0; i < movePtsStart.length; i++) {
+                minX = Math.min(minX, movePtsStart[i].x);
+                maxX = Math.max(maxX, movePtsStart[i].x);
+                minY = Math.min(minY, movePtsStart[i].y);
+                maxY = Math.max(maxY, movePtsStart[i].y);
+            }
+            dx = Utils.clamp(dx, -minX, canvas.width - maxX);
+            dy = Utils.clamp(dy, -minY, canvas.height - maxY);
+
+            var pts = activePts();
+            for (var j = 0; j < pts.length; j++) {
+                pts[j].x = movePtsStart[j].x + dx;
+                pts[j].y = movePtsStart[j].y + dy;
+                QuadRenderer.updateCornerPosition(j, pts[j].x, pts[j].y, canvas.width, canvas.height);
+            }
+            QuadRenderer.renderQuads(crops, activeIdx);
+
+            UI.hideError();
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(function () {
+                    rafPending = false;
+                    updatePreview();
+                });
+            }
+        }
+
+        function stopQuadMove() {
+            movingQuad = false;
+            document.removeEventListener('mousemove', onQuadMove);
+            document.removeEventListener('mouseup', stopQuadMove);
+            document.removeEventListener('touchmove', onQuadMove, { passive: false });
+            document.removeEventListener('touchend', stopQuadMove);
+            updatePreview();
+        }
+
+        // ---- Rotate the quad to an arbitrary angle ----
+        function startRotate(e) {
+            if (!activeCrop()) return;
+            e.preventDefault();
+            rotating = true;
+            rotatePtsStart = Utils.deepClone(activePts());
+
+            var cx = 0, cy = 0;
+            for (var i = 0; i < rotatePtsStart.length; i++) {
+                cx += rotatePtsStart[i].x;
+                cy += rotatePtsStart[i].y;
+            }
+            rotateCenter = { x: cx / 4, y: cy / 4 };
+
+            var pos = pointerPos(e);
+            rotateStartAngle = Math.atan2(pos.y - rotateCenter.y, pos.x - rotateCenter.x);
+
+            document.addEventListener('mousemove', onRotate);
+            document.addEventListener('mouseup', stopRotate);
+            document.addEventListener('touchmove', onRotate, { passive: false });
+            document.addEventListener('touchend', stopRotate);
+        }
+
+        function onRotate(e) {
+            if (!rotating) return;
+            e.preventDefault();
+
+            var canvas = CanvasManager.srcCanvas;
+            var pos = pointerPos(e);
+            var angle = Math.atan2(pos.y - rotateCenter.y, pos.x - rotateCenter.x) - rotateStartAngle;
+            var cos = Math.cos(angle), sin = Math.sin(angle);
+
+            // Free rotation around the centroid (corners may leave the image).
+            var pts = activePts();
+            for (var i = 0; i < pts.length; i++) {
+                var ox = rotatePtsStart[i].x - rotateCenter.x;
+                var oy = rotatePtsStart[i].y - rotateCenter.y;
+                pts[i].x = rotateCenter.x + ox * cos - oy * sin;
+                pts[i].y = rotateCenter.y + ox * sin + oy * cos;
+                QuadRenderer.updateCornerPosition(i, pts[i].x, pts[i].y, canvas.width, canvas.height);
+            }
+            QuadRenderer.renderQuads(crops, activeIdx);
+
+            UI.hideError();
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(function () {
+                    rafPending = false;
+                    updatePreview();
+                });
+            }
+        }
+
+        function stopRotate() {
+            rotating = false;
+            document.removeEventListener('mousemove', onRotate);
+            document.removeEventListener('mouseup', stopRotate);
+            document.removeEventListener('touchmove', onRotate, { passive: false });
+            document.removeEventListener('touchend', stopRotate);
             updatePreview();
         }
 
