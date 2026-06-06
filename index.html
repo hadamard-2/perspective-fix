@@ -80,6 +80,11 @@
                         <span class="icon icon-rotate"></span>
                         <span class="btn-text">Rotate</span>
                     </button>
+                    <button id="addCropBtn" class="btn btn-sec" type="button" title="Add another crop (A)"
+                        aria-label="Add another crop region">
+                        <span class="icon icon-new-image"></span>
+                        <span class="btn-text">Add crop</span>
+                    </button>
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
                     <label for="formatSelect"
@@ -97,12 +102,14 @@
                 </div>
             </div>
 
-            <div class="canvas-grid">
-                <div class="panel">
+            <div id="cropTabs" class="crop-tabs" role="tablist" aria-label="Crop regions"></div>
+
+            <div class="editor-stack">
+                <div class="panel panel-edit">
                     <div class="panel-header">
                         <div class="panel-title">
                             <span class="icon icon-cursor-drag"></span>
-                            <span>Original – Drag the corners</span>
+                            <span>Drag the corners to mark what should be straight</span>
                         </div>
                         <span id="origDim" class="dim-badge" aria-label="Original image dimensions">—</span>
                     </div>
@@ -115,21 +122,15 @@
                     </div>
                 </div>
 
-                <div class="panel">
+                <div class="panel panel-results">
                     <div class="panel-header">
                         <div class="panel-title">
                             <span class="icon icon-checkmark"></span>
                             <span>Fixed – Ready to download</span>
                         </div>
-                        <span id="prevDim" class="dim-badge" aria-label="Output image dimensions">—</span>
                     </div>
-                    <div class="panel-body">
-                        <div class="preview-wrap" id="previewWrap">
-                            <canvas id="prevCanvas" aria-label="Perspective corrected image preview"></canvas>
-                            <div id="loadingOverlay" class="loading-overlay" aria-hidden="true">
-                                <span class="icon icon-spinner spin"></span>
-                            </div>
-                        </div>
+                    <div class="panel-body results-body">
+                        <div id="previewCards" class="preview-cards" aria-label="Corrected results per crop"></div>
                     </div>
                 </div>
             </div>

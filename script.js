@@ -62,7 +62,11 @@
             }),
 
             // Corner labels for accessibility
-            CORNER_LABELS: Object.freeze(['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'])
+            CORNER_LABELS: Object.freeze(['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left']),
+
+            // Multi-crop
+            MAX_CROPS: 2,
+            CROP_COLORS: Object.freeze(['#10b981', '#6366f1']) // green, indigo
         });
     })();
 
@@ -169,15 +173,15 @@
 
         var elementIds = [
             'themeBtn', 'uploadZone', 'fileInput', 'errorMsg',
-            'editor', 'srcCanvas', 'prevCanvas',
-            'quadSvg', 'corners', 'origDim', 'prevDim',
-            'loadingOverlay', 'newBtn', 'resetBtn', 'rotateBtn', 'downloadBtn',
+            'editor', 'srcCanvas',
+            'quadSvg', 'corners', 'origDim',
+            'newBtn', 'resetBtn', 'rotateBtn', 'addCropBtn', 'downloadBtn',
             'downloadIcon', 'downloadText', 'formatSelect', 'origContainer',
-            'canvasWrap', 'previewWrap', 'zoomLens'
+            'canvasWrap', 'cropTabs', 'previewCards', 'zoomLens'
         ];
 
         var criticalIds = [
-            'uploadZone', 'fileInput', 'srcCanvas', 'prevCanvas',
+            'uploadZone', 'fileInput', 'srcCanvas', 'previewCards',
             'corners', 'quadSvg', 'downloadBtn'
         ];
 
@@ -490,15 +494,12 @@
     var CanvasManager = (function () {
         var srcCanvas = null;
         var srcCtx = null;
-        var prevCanvas = null;
-        var prevCtx = null;
         var useOffscreen = Config.supportsOffscreenCanvas;
 
         function init() {
             srcCanvas = DOM.get('srcCanvas');
-            prevCanvas = DOM.get('prevCanvas');
 
-            if (!srcCanvas || !prevCanvas) {
+            if (!srcCanvas) {
                 return { success: false, error: 'Canvas elements not found' };
             }
 
@@ -506,17 +507,12 @@
                 alpha: false,
                 desynchronized: true
             });
-            prevCtx = prevCanvas.getContext('2d', {
-                alpha: true,
-                desynchronized: true
-            });
 
-            if (!srcCtx || !prevCtx) {
+            if (!srcCtx) {
                 return { success: false, error: 'Canvas context creation failed' };
             }
 
             enableSmoothing(srcCtx);
-            enableSmoothing(prevCtx);
 
             return { success: true };
         }
@@ -572,14 +568,19 @@
             srcCtx.drawImage(img, 0, 0, width, height);
         }
 
-        function drawPreview(imageData) {
-            prevCanvas.width = imageData.width;
-            prevCanvas.height = imageData.height;
-            prevCtx.putImageData(imageData, 0, 0);
+        function drawPreviewToCanvas(canvasEl, imageData) {
+            if (!canvasEl) return;
+            canvasEl.width = imageData.width;
+            canvasEl.height = imageData.height;
+            var ctx = canvasEl.getContext('2d', { alpha: true });
+            enableSmoothing(ctx);
+            ctx.putImageData(imageData, 0, 0);
         }
 
-        function clearPreview() {
-            prevCtx.clearRect(0, 0, prevCanvas.width, prevCanvas.height);
+        function clearCanvas(canvasEl) {
+            if (!canvasEl) return;
+            var ctx = canvasEl.getContext('2d');
+            if (ctx) ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
         }
 
         function createFullResCanvas(imageData) {
@@ -728,14 +729,13 @@
             init: init,
             getImageData: getImageData,
             drawSource: drawSource,
-            drawPreview: drawPreview,
-            clearPreview: clearPreview,
+            drawPreviewToCanvas: drawPreviewToCanvas,
+            clearCanvas: clearCanvas,
             createFullResCanvas: createFullResCanvas,
             toBlob: toBlob,
             getSourceDimensions: getSourceDimensions,
             cleanup: cleanup,
             get srcCanvas() { return srcCanvas; },
-            get prevCanvas() { return prevCanvas; },
             get useOffscreen() { return useOffscreen; }
         });
     })();
@@ -1067,28 +1067,145 @@
             DOM.hide('errorMsg');
         }
 
+        // Loading is shown on whichever crop card is currently processing.
+        var loadingTargetEl = null;
+
+        function setLoadingTarget(el) {
+            loadingTargetEl = el;
+        }
+
         function showLoading() {
-            DOM.toggleClass('loadingOverlay', 'show', true);
+            if (loadingTargetEl) loadingTargetEl.classList.add('show');
         }
 
         function hideLoading() {
-            DOM.toggleClass('loadingOverlay', 'show', false);
+            if (loadingTargetEl) loadingTargetEl.classList.remove('show');
         }
 
-        function updateDimensions(original, preview) {
+        function updateDimensions(original) {
             var origDim = DOM.get('origDim');
-            var prevDim = DOM.get('prevDim');
-
             if (origDim && original && original.w && original.h) {
                 origDim.textContent = original.w + ' × ' + original.h;
             }
+        }
 
-            if (prevDim) {
-                if (preview && preview.w && preview.h) {
-                    prevDim.textContent = preview.w + ' × ' + preview.h;
-                } else if (preview === null) {
-                    prevDim.textContent = '—';
-                }
+        // ---- Crop tabs + per-crop preview cards ----
+        var cards = {}; // cropId -> { card, canvas, loading, dim }
+
+        function renderCropTabs(crops, activeIdx, handlers) {
+            var bar = DOM.get('cropTabs');
+            if (!bar) return;
+            bar.innerHTML = '';
+
+            for (var i = 0; i < crops.length; i++) {
+                (function (idx) {
+                    var crop = crops[idx];
+                    var tab = DOM.create('button', {
+                        className: 'crop-tab' + (idx === activeIdx ? ' active' : ''),
+                        type: 'button',
+                        role: 'tab',
+                        'aria-selected': idx === activeIdx ? 'true' : 'false'
+                    });
+                    tab.style.setProperty('--crop-color', crop.color);
+
+                    var swatch = DOM.create('span', { className: 'crop-swatch' });
+                    var label = DOM.create('span', {}, 'Crop ' + (idx + 1));
+                    tab.appendChild(swatch);
+                    tab.appendChild(label);
+
+                    tab.addEventListener('click', function () {
+                        if (handlers && handlers.onSelect) handlers.onSelect(idx);
+                    });
+
+                    if (crops.length > 1 && handlers && handlers.onDiscard) {
+                        var discard = DOM.create('span', {
+                            className: 'crop-discard',
+                            role: 'button',
+                            'aria-label': 'Discard crop ' + (idx + 1),
+                            title: 'Discard crop'
+                        }, '×');
+                        discard.addEventListener('click', function (e) {
+                            e.stopPropagation();
+                            handlers.onDiscard(idx);
+                        });
+                        tab.appendChild(discard);
+                    }
+
+                    bar.appendChild(tab);
+                })(i);
+            }
+
+            var addBtn = DOM.get('addCropBtn');
+            if (addBtn) addBtn.disabled = crops.length >= Config.MAX_CROPS;
+        }
+
+        function renderPreviewCards(crops, activeIdx) {
+            var container = DOM.get('previewCards');
+            if (!container) return;
+
+            container.innerHTML = '';
+            cards = {};
+            DOM.toggleClass(container, 'multi', crops.length > 1);
+
+            for (var i = 0; i < crops.length; i++) {
+                var crop = crops[i];
+                var card = DOM.create('div', {
+                    className: 'preview-card' + (i === activeIdx ? ' active' : '')
+                });
+                card.style.setProperty('--crop-color', crop.color);
+
+                var head = DOM.create('div', { className: 'preview-card-head' });
+                var labelWrap = DOM.create('div', { className: 'preview-card-label' });
+                labelWrap.appendChild(DOM.create('span', { className: 'crop-swatch' }));
+                labelWrap.appendChild(DOM.create('span', {}, 'Crop ' + (i + 1)));
+                var dim = DOM.create('span', { className: 'dim-badge' }, '—');
+                head.appendChild(labelWrap);
+                head.appendChild(dim);
+
+                var wrap = DOM.create('div', { className: 'preview-wrap' });
+                var canvas = DOM.create('canvas', {
+                    'aria-label': 'Corrected result for crop ' + (i + 1)
+                });
+                var loading = DOM.create('div', { className: 'loading-overlay', 'aria-hidden': 'true' });
+                loading.appendChild(DOM.create('span', { className: 'icon icon-spinner spin' }));
+                wrap.appendChild(canvas);
+                wrap.appendChild(loading);
+
+                card.appendChild(head);
+                card.appendChild(wrap);
+
+                (function (idx) {
+                    card.addEventListener('click', function () {
+                        if (cardHandlers.onSelect) cardHandlers.onSelect(idx);
+                    });
+                })(i);
+
+                container.appendChild(card);
+                cards[crop.id] = { card: card, canvas: canvas, loading: loading, dim: dim };
+            }
+        }
+
+        var cardHandlers = {};
+        function setCardHandlers(h) { cardHandlers = h || {}; }
+
+        function getCropCanvas(cropId) {
+            return cards[cropId] ? cards[cropId].canvas : null;
+        }
+
+        function getCropLoading(cropId) {
+            return cards[cropId] ? cards[cropId].loading : null;
+        }
+
+        function setCropDim(cropId, dims) {
+            var entry = cards[cropId];
+            if (!entry) return;
+            entry.dim.textContent = (dims && dims.w && dims.h) ? (dims.w + ' × ' + dims.h) : '—';
+        }
+
+        function setActiveCard(crops, activeIdx) {
+            for (var i = 0; i < crops.length; i++) {
+                var entry = cards[crops[i].id];
+                if (entry) entry.card.classList.toggle('active', i === activeIdx);
             }
         }
 
@@ -1157,11 +1274,19 @@
             hideError: hideError,
             showLoading: showLoading,
             hideLoading: hideLoading,
+            setLoadingTarget: setLoadingTarget,
             updateDimensions: updateDimensions,
             showEditor: showEditor,
             showHero: showHero,
             setDownloadState: setDownloadState,
-            showInitError: showInitError
+            showInitError: showInitError,
+            renderCropTabs: renderCropTabs,
+            renderPreviewCards: renderPreviewCards,
+            setCardHandlers: setCardHandlers,
+            getCropCanvas: getCropCanvas,
+            getCropLoading: getCropLoading,
+            setCropDim: setCropDim,
+            setActiveCard: setActiveCard
         });
     })();
 
@@ -1191,34 +1316,60 @@
             quadSvg.style.height = height + 'px';
         }
 
-        function renderQuad(points) {
-            if (!quadSvg || points.length !== 4) return;
-
-            var style = getComputedStyle(document.documentElement);
-            var color = style.getPropertyValue('--accent').trim() || '#059669';
+        function quadMarkup(points, color, isActive, cropIdx) {
+            if (points.length !== 4) return '';
 
             var pointsStr = points.map(function (p) {
                 return p.x + ',' + p.y;
             }).join(' ');
 
-            var linesHtml = '';
-            for (var i = 0; i < 4; i++) {
-                var next = (i + 1) % 4;
-                linesHtml += '<line x1="' + points[i].x + '" y1="' + points[i].y +
-                    '" x2="' + points[next].x + '" y2="' + points[next].y +
-                    '" stroke="' + color + '" stroke-width="2" stroke-dasharray="5,4"/>';
-                linesHtml += '<line class="edge-handle" data-edge="' + i + '" x1="' + points[i].x + '" y1="' + points[i].y +
-                    '" x2="' + points[next].x + '" y2="' + points[next].y +
-                    '" stroke="transparent" stroke-width="30" style="pointer-events: stroke; cursor: grab;"/>';
+            var markup = '';
+
+            if (isActive) {
+                markup += '<polygon points="' + pointsStr + '" fill="' + color +
+                    '" fill-opacity="0.12" stroke="' + color + '" stroke-width="2"/>';
+                for (var i = 0; i < 4; i++) {
+                    var next = (i + 1) % 4;
+                    markup += '<line x1="' + points[i].x + '" y1="' + points[i].y +
+                        '" x2="' + points[next].x + '" y2="' + points[next].y +
+                        '" stroke="' + color + '" stroke-width="2" stroke-dasharray="5,4"/>';
+                    markup += '<line class="edge-handle" data-edge="' + i + '" x1="' + points[i].x + '" y1="' + points[i].y +
+                        '" x2="' + points[next].x + '" y2="' + points[next].y +
+                        '" stroke="transparent" stroke-width="30" style="pointer-events: stroke; cursor: grab;"/>';
+                }
+            } else {
+                // Dimmed visual outline (non-interactive)…
+                markup += '<polygon points="' + pointsStr +
+                    '" fill="' + color + '" fill-opacity="0.04" stroke="' + color +
+                    '" stroke-width="1.5" stroke-dasharray="4,5" stroke-opacity="0.7"' +
+                    ' style="pointer-events: none;"/>';
+                // …plus a wide transparent outline that captures clicks to select the crop.
+                markup += '<polygon class="crop-poly" data-crop="' + cropIdx + '" points="' + pointsStr +
+                    '" fill="none" stroke="transparent" stroke-width="24"' +
+                    ' style="pointer-events: stroke; cursor: pointer;"/>';
             }
 
-            quadSvg.innerHTML =
-                '<polygon points="' + pointsStr + '" fill="' + color +
-                '" fill-opacity="0.12" stroke="' + color + '" stroke-width="2"/>' +
-                linesHtml;
+            return markup;
         }
 
-        function renderCorners(points, canvasWidth, canvasHeight, handlers) {
+        // Render every crop's quad; only the active one gets edge handles.
+        function renderQuads(crops, activeIdx) {
+            if (!quadSvg) return;
+
+            var markup = '';
+            // Draw inactive crops first so the active quad sits on top
+            for (var i = 0; i < crops.length; i++) {
+                if (i === activeIdx) continue;
+                markup += quadMarkup(crops[i].pts, crops[i].color, false, i);
+            }
+            if (crops[activeIdx]) {
+                markup += quadMarkup(crops[activeIdx].pts, crops[activeIdx].color, true, activeIdx);
+            }
+
+            quadSvg.innerHTML = markup;
+        }
+
+        function renderCorners(points, canvasWidth, canvasHeight, color, handlers) {
             if (!cornersDiv) return;
 
             cornersDiv.innerHTML = '';
@@ -1235,6 +1386,7 @@
                     'aria-valuemax': '100',
                     tabIndex: 0
                 });
+                if (color) el.style.background = color;
 
                 var label = DOM.create('span', { className: 'corner-label' }, shortLabels[i]);
                 el.appendChild(label);
@@ -1282,7 +1434,7 @@
         return Object.freeze({
             init: init,
             setSize: setSize,
-            renderQuad: renderQuad,
+            renderQuads: renderQuads,
             renderCorners: renderCorners,
             updateCornerPosition: updateCornerPosition,
             setCornerActive: setCornerActive,
@@ -1695,16 +1847,19 @@
             return inProgress;
         }
 
-        function startDownload(canvasObj, format) {
-            if (inProgress) {
+        function startDownload(canvasObj, format, options) {
+            options = options || {};
+            if (inProgress && !options.skipThrottle) {
                 return Promise.reject(new Error('Download in progress'));
             }
 
-            var now = Date.now();
-            if (now - lastDownloadTime < Config.DOWNLOAD_THROTTLE_MS) {
-                return Promise.reject(new Error('Please wait before downloading again'));
+            if (!options.skipThrottle) {
+                var now = Date.now();
+                if (now - lastDownloadTime < Config.DOWNLOAD_THROTTLE_MS) {
+                    return Promise.reject(new Error('Please wait before downloading again'));
+                }
+                lastDownloadTime = now;
             }
-            lastDownloadTime = now;
 
             inProgress = true;
             UI.setDownloadState('processing');
@@ -1716,7 +1871,8 @@
             var origName = FileHandler.getFileName() || 'image';
             var lastDotIdx = origName.lastIndexOf('.');
             var baseName = lastDotIdx !== -1 ? origName.substring(0, lastDotIdx) : origName;
-            var filename = baseName + '-CORRECTED.' + extension;
+            var suffix = options.suffix || '';
+            var filename = baseName + '-CORRECTED' + suffix + '.' + extension;
 
             var quality;
             if (format === 'jpg') {
@@ -1802,7 +1958,12 @@
         var origImg = null;
         var origData = null;
         var scale = 1;
-        var pts = [];
+
+        // Multi-crop state: each crop owns its own 4 corner points + color.
+        var crops = [];        // [{ id, color, pts: [{x,y} x4] }]
+        var activeIdx = 0;
+        var cropSeq = 0;
+
         var dragging = false;
         var dragIdx = -1;
         var rafPending = false;
@@ -1814,16 +1975,50 @@
         var edgeMouseStart = { x: 0, y: 0 };
         var edgePtsStart = [];
 
+        function activeCrop() {
+            return crops[activeIdx] || null;
+        }
+
+        function activePts() {
+            return crops[activeIdx] ? crops[activeIdx].pts : [];
+        }
+
+        function pickColor() {
+            var used = {};
+            for (var i = 0; i < crops.length; i++) used[crops[i].color] = true;
+            for (var c = 0; c < Config.CROP_COLORS.length; c++) {
+                if (!used[Config.CROP_COLORS[c]]) return Config.CROP_COLORS[c];
+            }
+            return Config.CROP_COLORS[crops.length % Config.CROP_COLORS.length];
+        }
+
+        function makeCrop(pts, color) {
+            return { id: ++cropSeq, color: color || pickColor(), pts: pts };
+        }
+
         function init() {
             QuadRenderer.init();
             ImageProcessor.init();
             ZoomLens.init();
+
+            UI.setCardHandlers({ onSelect: setActiveCrop });
 
             var quadSvg = DOM.get('quadSvg');
             if (quadSvg) {
                 quadSvg.addEventListener('mousedown', startEdgeDrag);
                 quadSvg.addEventListener('touchstart', startEdgeDrag, { passive: false });
             }
+        }
+
+        function renderTabs() {
+            UI.renderCropTabs(crops, activeIdx, {
+                onSelect: setActiveCrop,
+                onDiscard: removeCrop
+            });
+        }
+
+        function rebuildCards() {
+            UI.renderPreviewCards(crops, activeIdx);
         }
 
         /**
@@ -1885,18 +2080,24 @@
             QuadRenderer.setSize(displaySize.width, displaySize.height);
 
             // Update dimension display
-            UI.updateDimensions(
-                { w: origImg.width, h: origImg.height },
-                null
-            );
+            UI.updateDimensions({ w: origImg.width, h: origImg.height });
 
-            // Initialize corners
-            resetCorners();
+            // Start with a single crop
+            var dims = CanvasManager.getSourceDimensions();
+            crops = [makeCrop(Geometry.getDefaultCorners(dims.width, dims.height), Config.CROP_COLORS[0])];
+            activeIdx = 0;
+
+            UI.hideError();
+            rebuildCards();
+            renderTabs();
+            renderAll();
+            refreshAllPreviews();
 
             // Show editor
             UI.showEditor();
         }
 
+        // Reset the active crop's corners to the default rectangle.
         function resetCorners() {
             var dims = CanvasManager.getSourceDimensions();
 
@@ -1906,7 +2107,8 @@
                 return;
             }
 
-            pts = Geometry.getDefaultCorners(dims.width, dims.height);
+            if (!activeCrop()) return;
+            activeCrop().pts = Geometry.getDefaultCorners(dims.width, dims.height);
 
             UI.hideError();
             renderAll();
@@ -1923,11 +2125,55 @@
                 return;
             }
 
-            QuadRenderer.renderCorners(pts, dims.width, dims.height, {
+            var crop = activeCrop();
+            QuadRenderer.renderCorners(activePts(), dims.width, dims.height, crop ? crop.color : null, {
                 onDragStart: startDrag,
                 onKeydown: handleCornerKeydown
             });
-            QuadRenderer.renderQuad(pts);
+            QuadRenderer.renderQuads(crops, activeIdx);
+        }
+
+        function addCrop() {
+            if (!origImg || crops.length >= Config.MAX_CROPS) return;
+
+            var dims = CanvasManager.getSourceDimensions();
+            // Inset the new crop more than the default so it's visibly distinct.
+            var newCrop = makeCrop(Geometry.getDefaultCorners(dims.width, dims.height, 0.22));
+            crops.push(newCrop);
+            activeIdx = crops.length - 1;
+
+            UI.hideError();
+            rebuildCards();        // rebuilds all card canvases…
+            renderTabs();
+            renderAll();
+            refreshAllPreviews();  // …so re-render every crop's preview
+            A11y.announce('Crop ' + crops.length + ' added');
+        }
+
+        function removeCrop(idx) {
+            if (crops.length <= 1 || idx < 0 || idx >= crops.length) return;
+
+            crops.splice(idx, 1);
+            if (activeIdx >= crops.length) activeIdx = crops.length - 1;
+            else if (idx < activeIdx) activeIdx--;
+
+            UI.hideError();
+            rebuildCards();
+            renderTabs();
+            renderAll();
+            refreshAllPreviews();
+            A11y.announce('Crop removed');
+        }
+
+        function setActiveCrop(idx) {
+            if (idx === activeIdx || idx < 0 || idx >= crops.length) return;
+            activeIdx = idx;
+
+            // Switching crops doesn't change geometry — no reprocessing needed.
+            renderAll();
+            renderTabs();
+            UI.setActiveCard(crops, activeIdx);
+            updatePreview(); // refresh active crop's dim/state + download button
         }
 
         function startDrag(e) {
@@ -1961,10 +2207,10 @@
             var x = Utils.clamp(clientX - rect.left, 0, canvas.width);
             var y = Utils.clamp(clientY - rect.top, 0, canvas.height);
 
-            pts[dragIdx] = { x: x, y: y };
+            activePts()[dragIdx] = { x: x, y: y };
 
             QuadRenderer.updateCornerPosition(dragIdx, x, y, canvas.width, canvas.height);
-            QuadRenderer.renderQuad(pts);
+            QuadRenderer.renderQuads(crops, activeIdx);
 
             // Show zoom lens magnifier near cursor
             ZoomLens.show(canvas, x, y, clientX, clientY);
@@ -2004,13 +2250,22 @@
         function startEdgeDrag(e) {
             var target = e.target;
             var cls = target.getAttribute('class') || '';
+
+            // Clicking an inactive crop's outline selects it instead of dragging.
+            if (cls.indexOf('crop-poly') !== -1) {
+                e.preventDefault();
+                var cropIdx = parseInt(target.getAttribute('data-crop'), 10);
+                if (!isNaN(cropIdx)) setActiveCrop(cropIdx);
+                return;
+            }
+
             if (cls.indexOf('edge-handle') === -1) return;
 
             e.preventDefault();
             edgeDragging = true;
             edgeDragIdx = parseInt(target.getAttribute('data-edge'), 10);
 
-            edgePtsStart = Utils.deepClone(pts);
+            edgePtsStart = Utils.deepClone(activePts());
 
             var canvas = CanvasManager.srcCanvas;
             var rect = canvas.getBoundingClientRect();
@@ -2074,6 +2329,7 @@
             dx = Utils.clamp(dx, minX, maxX);
             dy = Utils.clamp(dy, minY, maxY);
 
+            var pts = activePts();
             pts[p1Idx].x = edgePtsStart[p1Idx].x + dx;
             pts[p1Idx].y = edgePtsStart[p1Idx].y + dy;
             pts[p2Idx].x = edgePtsStart[p2Idx].x + dx;
@@ -2081,7 +2337,7 @@
 
             QuadRenderer.updateCornerPosition(p1Idx, pts[p1Idx].x, pts[p1Idx].y, canvas.width, canvas.height);
             QuadRenderer.updateCornerPosition(p2Idx, pts[p2Idx].x, pts[p2Idx].y, canvas.width, canvas.height);
-            QuadRenderer.renderQuad(pts);
+            QuadRenderer.renderQuads(crops, activeIdx);
 
             UI.hideError();
 
@@ -2121,6 +2377,7 @@
 
             var step = e.shiftKey ? Config.CORNER_STEP_FAST : Config.CORNER_STEP;
             var canvas = CanvasManager.srcCanvas;
+            var pts = activePts();
             var pt = pts[idx];
             var newX = pt.x;
             var newY = pt.y;
@@ -2138,44 +2395,60 @@
             pts[idx] = { x: newX, y: newY };
 
             QuadRenderer.updateCornerPosition(idx, newX, newY, canvas.width, canvas.height);
-            QuadRenderer.renderQuad(pts);
+            QuadRenderer.renderQuads(crops, activeIdx);
 
             UI.hideError();
             updatePreview();
         }
 
+        // Refresh the active crop's preview (debounced unless mid-drag).
         function updatePreview() {
             if (previewTimer !== null) {
                 clearTimeout(previewTimer);
                 previewTimer = null;
             }
 
+            var idx = activeIdx;
             // During active drag, update immediately for true live preview
             if (dragging) {
-                doPreviewUpdate();
+                doPreviewUpdate(idx);
             } else {
                 previewTimer = setTimeout(function () {
                     previewTimer = null;
-                    doPreviewUpdate();
+                    doPreviewUpdate(idx);
                 }, Config.PREVIEW_DEBOUNCE_MS);
             }
         }
 
-        function doPreviewUpdate() {
-            var dims = Geometry.calculateDimensions(pts, scale);
+        // Reprocess every crop's preview (used after add/remove/rotate/resize).
+        function refreshAllPreviews() {
+            for (var i = 0; i < crops.length; i++) {
+                doPreviewUpdate(i);
+            }
+        }
+
+        function doPreviewUpdate(cropIdx) {
+            var crop = crops[cropIdx];
+            if (!crop) return;
+
+            var isActiveCrop = cropIdx === activeIdx;
+            var dims = Geometry.calculateDimensions(crop.pts, scale);
 
             if (!dims.isValid || !dims.src) {
-                CanvasManager.clearPreview();
-                UI.updateDimensions(null, null);
-                UI.showError('Invalid selection: corners form an invalid shape.');
-                UI.setDownloadState('disabled');
-                UI.hideLoading();
+                CanvasManager.clearCanvas(UI.getCropCanvas(crop.id));
+                UI.setCropDim(crop.id, null);
+                if (isActiveCrop) {
+                    UI.showError('Invalid selection: corners form an invalid shape.');
+                    UI.setDownloadState('disabled');
+                }
                 return;
             }
 
-            UI.hideError();
-            if (!DownloadManager.isInProgress()) {
-                UI.setDownloadState('ready');
+            if (isActiveCrop) {
+                UI.hideError();
+                if (!DownloadManager.isInProgress()) {
+                    UI.setDownloadState('ready');
+                }
             }
 
             var previewScale = Math.min(
@@ -2186,6 +2459,9 @@
             var previewW = Math.max(1, Math.round(dims.w * previewScale));
             var previewH = Math.max(1, Math.round(dims.h * previewScale));
 
+            var loadEl = UI.getCropLoading(crop.id);
+            if (loadEl) loadEl.classList.add('show');
+
             ImageProcessor.process({
                 srcCorners: dims.src,
                 destWidth: previewW,
@@ -2193,58 +2469,78 @@
                 isPreview: true,
                 imageData: origData,
                 onComplete: function (imgData) {
-                    CanvasManager.drawPreview(imgData);
-                    UI.updateDimensions(null, { w: dims.w, h: dims.h });
+                    if (loadEl) loadEl.classList.remove('show');
+                    CanvasManager.drawPreviewToCanvas(UI.getCropCanvas(crop.id), imgData);
+                    UI.setCropDim(crop.id, { w: dims.w, h: dims.h });
                 },
                 onError: function (msg) {
-                    UI.showError(msg);
+                    if (loadEl) loadEl.classList.remove('show');
+                    if (isActiveCrop) UI.showError(msg);
                 }
             });
         }
 
+        function processFullRes(dims) {
+            return new Promise(function (resolve, reject) {
+                ImageProcessor.process({
+                    srcCorners: dims.src,
+                    destWidth: dims.w,
+                    destHeight: dims.h,
+                    isPreview: false,
+                    imageData: origData,
+                    onComplete: function (canvasObj) { resolve(canvasObj); },
+                    onError: function (msg) { reject(new Error(msg)); }
+                });
+            });
+        }
+
+        // Download every valid crop as its own file (sequentially).
         function download() {
             if (!origImg || DownloadManager.isInProgress()) return;
 
             UI.hideError();
 
-            var dims = Geometry.calculateDimensions(pts, scale);
+            var valid = [];
+            for (var i = 0; i < crops.length; i++) {
+                var dims = Geometry.calculateDimensions(crops[i].pts, scale);
+                if (dims.isValid && dims.src && Geometry.validateOutputDimensions(dims.w, dims.h).valid) {
+                    valid.push({ index: i, dims: dims });
+                }
+            }
 
-            if (!dims.isValid || !dims.src) {
-                UI.showError('Cannot download: invalid corner selection.');
+            if (!valid.length) {
+                UI.showError('Cannot download: no valid crop selection.');
                 return;
             }
 
-            var validation = Geometry.validateOutputDimensions(dims.w, dims.h);
-            if (!validation.valid) {
-                UI.showError(validation.reason);
-                return;
-            }
+            var formatSelect = DOM.get('formatSelect');
+            var format = formatSelect ? formatSelect.value : 'png';
+            var multi = valid.length > 1;
 
             UI.setDownloadState('processing');
-            A11y.announce('Processing image for download');
+            A11y.announce('Processing ' + valid.length + ' crop' + (multi ? 's' : '') + ' for download');
 
-            ImageProcessor.process({
-                srcCorners: dims.src,
-                destWidth: dims.w,
-                destHeight: dims.h,
-                isPreview: false,
-                imageData: origData,
-                onComplete: function (canvasObj) {
-                    var formatSelect = DOM.get('formatSelect');
-                    var format = formatSelect ? formatSelect.value : 'png';
-
-                    DownloadManager.startDownload(canvasObj, format)
-                        .then(function () {
+            var chain = Promise.resolve();
+            valid.forEach(function (item, k) {
+                chain = chain.then(function () {
+                    return processFullRes(item.dims).then(function (canvasObj) {
+                        var suffix = multi ? '-crop-' + (item.index + 1) : '';
+                        return DownloadManager.startDownload(canvasObj, format, {
+                            suffix: suffix,
+                            skipThrottle: k > 0
+                        }).then(function () {
                             ImageProcessor.clearFullResCanvas();
-                        })
-                        .catch(function (err) {
-                            UI.showError('Download failed: ' + (err.message || err));
                         });
-                },
-                onError: function (msg) {
-                    UI.showError(msg);
-                    DownloadManager.reset();
-                }
+                    });
+                });
+            });
+
+            chain.then(function () {
+                UI.setDownloadState('ready');
+            }).catch(function (err) {
+                UI.showError('Download failed: ' + (err.message || err));
+                ImageProcessor.clearFullResCanvas();
+                DownloadManager.reset();
             });
         }
 
@@ -2260,13 +2556,15 @@
             var scaleX = newSize.width / oldDims.width;
             var scaleY = newSize.height / oldDims.height;
 
-            pts = Geometry.scalePoints(pts, scaleX, scaleY, newSize.width, newSize.height);
+            for (var i = 0; i < crops.length; i++) {
+                crops[i].pts = Geometry.scalePoints(crops[i].pts, scaleX, scaleY, newSize.width, newSize.height);
+            }
             scale = newSize.scale;
 
             CanvasManager.drawSource(origImg, newSize.width, newSize.height);
             QuadRenderer.setSize(newSize.width, newSize.height);
             renderAll();
-            updatePreview();
+            refreshAllPreviews();
         }
 
         function isActive() {
@@ -2283,7 +2581,8 @@
             origImg = null;
             origData = null;
             scale = 1;
-            pts = [];
+            crops = [];
+            activeIdx = 0;
             dragging = false;
             dragIdx = -1;
             rafPending = false;
@@ -2321,26 +2620,6 @@
                 var oldScaleX = oldW / oldDisplayDims.width;
                 var oldScaleY = oldH / oldDisplayDims.height;
 
-                var origPts = [];
-                for (var i = 0; i < pts.length; i++) {
-                    origPts.push({
-                        x: pts[i].x * oldScaleX,
-                        y: pts[i].y * oldScaleY
-                    });
-                }
-
-                // Apply 90° CW rotation: (x, y) -> (oldH - y, x)
-                var rotatedPts = [];
-                for (var i = 0; i < origPts.length; i++) {
-                    rotatedPts.push({
-                        x: oldH - origPts[i].y,
-                        y: origPts[i].x
-                    });
-                }
-
-                // Reorder corners: BL->TL, TL->TR, TR->BR, BR->BL
-                var reorderedPts = [rotatedPts[3], rotatedPts[0], rotatedPts[1], rotatedPts[2]];
-
                 // Update image references
                 origImg = rotatedImg;
                 origData = CanvasManager.getImageData(rotatedImg);
@@ -2353,26 +2632,45 @@
                 CanvasManager.drawSource(origImg, displaySize.width, displaySize.height);
                 QuadRenderer.setSize(displaySize.width, displaySize.height);
 
-                // Convert rotated corners back to display space
                 var newW = rotatedImg.width;
                 var newH = rotatedImg.height;
                 var newScaleX = displaySize.width / newW;
                 var newScaleY = displaySize.height / newH;
 
-                pts = [];
-                for (var i = 0; i < reorderedPts.length; i++) {
-                    pts.push({
-                        x: Utils.clamp(reorderedPts[i].x * newScaleX, 0, displaySize.width),
-                        y: Utils.clamp(reorderedPts[i].y * newScaleY, 0, displaySize.height)
-                    });
+                // Remap every crop's corners through the rotation
+                for (var c = 0; c < crops.length; c++) {
+                    var pts = crops[c].pts;
+
+                    var origPts = [];
+                    for (var i = 0; i < pts.length; i++) {
+                        origPts.push({ x: pts[i].x * oldScaleX, y: pts[i].y * oldScaleY });
+                    }
+
+                    // Apply 90° CW rotation: (x, y) -> (oldH - y, x)
+                    var rotatedPts = [];
+                    for (var j = 0; j < origPts.length; j++) {
+                        rotatedPts.push({ x: oldH - origPts[j].y, y: origPts[j].x });
+                    }
+
+                    // Reorder corners: BL->TL, TL->TR, TR->BR, BR->BL
+                    var reorderedPts = [rotatedPts[3], rotatedPts[0], rotatedPts[1], rotatedPts[2]];
+
+                    var newPts = [];
+                    for (var k = 0; k < reorderedPts.length; k++) {
+                        newPts.push({
+                            x: Utils.clamp(reorderedPts[k].x * newScaleX, 0, displaySize.width),
+                            y: Utils.clamp(reorderedPts[k].y * newScaleY, 0, displaySize.height)
+                        });
+                    }
+                    crops[c].pts = newPts;
                 }
 
                 // Update dimension display
-                UI.updateDimensions({ w: newW, h: newH }, null);
+                UI.updateDimensions({ w: newW, h: newH });
 
                 // Re-render
                 renderAll();
-                updatePreview();
+                refreshAllPreviews();
 
                 A11y.announce('Image rotated 90 degrees clockwise');
             };
@@ -2393,7 +2691,10 @@
             isActive: isActive,
             cancelDrag: cancelDrag,
             reset: reset,
-            rotateImage: rotateImage
+            rotateImage: rotateImage,
+            addCrop: addCrop,
+            removeCrop: removeCrop,
+            setActiveCrop: setActiveCrop
         });
     })();
 
@@ -2503,6 +2804,7 @@
             var newBtn = DOM.get('newBtn');
             var resetBtn = DOM.get('resetBtn');
             var rotateBtn = DOM.get('rotateBtn');
+            var addCropBtn = DOM.get('addCropBtn');
             var downloadBtn = DOM.get('downloadBtn');
             var fileInput = DOM.get('fileInput');
 
@@ -2516,6 +2818,12 @@
             if (resetBtn) {
                 DOM.on(resetBtn, 'click', function () {
                     Editor.resetCorners();
+                });
+            }
+
+            if (addCropBtn) {
+                DOM.on(addCropBtn, 'click', function () {
+                    Editor.addCrop();
                 });
             }
 
@@ -2564,6 +2872,12 @@
                 if (key.toLowerCase() === 'q' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
                     e.preventDefault();
                     Editor.rotateImage();
+                    return;
+                }
+
+                if (key.toLowerCase() === 'a' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
+                    e.preventDefault();
+                    Editor.addCrop();
                     return;
                 }
 
