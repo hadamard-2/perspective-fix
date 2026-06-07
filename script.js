@@ -2270,6 +2270,28 @@
             document.addEventListener('touchend', stopEdgeDrag);
         }
 
+        // How far a point at `start` can slide along unit vector `dir` (per axis)
+        // before its x or y leaves [0, width]/[0, height]. Used to keep an edge
+        // drag from pushing corners off the canvas while sliding along an angle.
+        function clampSlide(t, points, dir, width, height) {
+            var min = -Infinity, max = Infinity;
+
+            function bound(start, d, limit) {
+                if (d === 0) return;
+                var t1 = (0 - start) / d;
+                var t2 = (limit - start) / d;
+                min = Math.max(min, Math.min(t1, t2));
+                max = Math.min(max, Math.max(t1, t2));
+            }
+
+            for (var i = 0; i < points.length; i++) {
+                bound(points[i].x, dir.x, width);
+                bound(points[i].y, dir.y, height);
+            }
+
+            return Utils.clamp(t, min, max);
+        }
+
         function onEdgeDrag(e) {
             if (!edgeDragging || edgeDragIdx < 0) return;
             e.preventDefault();
@@ -2293,27 +2315,42 @@
 
             var p1Idx = edgeDragIdx;
             var p2Idx = (edgeDragIdx + 1) % 4;
+            var q1Idx = (edgeDragIdx + 3) % 4;
+            var q2Idx = (edgeDragIdx + 2) % 4;
 
-            // Restrict movement based on edge orientation
-            if (edgeDragIdx === 0 || edgeDragIdx === 2) {
-                dx = 0; // Top/bottom edges move only vertically
-            } else if (edgeDragIdx === 1 || edgeDragIdx === 3) {
-                dy = 0; // Left/right edges move only horizontally
+            var p1 = edgePtsStart[p1Idx];
+            var p2 = edgePtsStart[p2Idx];
+            var q1 = edgePtsStart[q1Idx];
+            var q2 = edgePtsStart[q2Idx];
+
+            // Outward normal of the dragged edge — perpendicular to the edge's
+            // *current* (possibly rotated) direction, pointing away from the
+            // opposite edge. Sliding both edge corners along it grows/shrinks
+            // the quad while keeping it a parallelogram, whatever its rotation.
+            var edgeX = p2.x - p1.x;
+            var edgeY = p2.y - p1.y;
+            var edgeLen = Math.sqrt(edgeX * edgeX + edgeY * edgeY);
+            if (edgeLen < 1e-6) return;
+
+            var nx = -edgeY / edgeLen;
+            var ny = edgeX / edgeLen;
+
+            var midP = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            var midQ = { x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 };
+            if ((midP.x - midQ.x) * nx + (midP.y - midQ.y) * ny < 0) {
+                nx = -nx;
+                ny = -ny;
             }
 
-            var minX = -Math.min(edgePtsStart[p1Idx].x, edgePtsStart[p2Idx].x);
-            var maxX = canvas.width - Math.max(edgePtsStart[p1Idx].x, edgePtsStart[p2Idx].x);
-            var minY = -Math.min(edgePtsStart[p1Idx].y, edgePtsStart[p2Idx].y);
-            var maxY = canvas.height - Math.max(edgePtsStart[p1Idx].y, edgePtsStart[p2Idx].y);
-
-            dx = Utils.clamp(dx, minX, maxX);
-            dy = Utils.clamp(dy, minY, maxY);
+            // How far the mouse moved along that normal is how far the edge slides.
+            var t = dx * nx + dy * ny;
+            t = clampSlide(t, [p1, p2], { x: nx, y: ny }, canvas.width, canvas.height);
 
             var pts = activePts();
-            pts[p1Idx].x = edgePtsStart[p1Idx].x + dx;
-            pts[p1Idx].y = edgePtsStart[p1Idx].y + dy;
-            pts[p2Idx].x = edgePtsStart[p2Idx].x + dx;
-            pts[p2Idx].y = edgePtsStart[p2Idx].y + dy;
+            pts[p1Idx].x = p1.x + t * nx;
+            pts[p1Idx].y = p1.y + t * ny;
+            pts[p2Idx].x = p2.x + t * nx;
+            pts[p2Idx].y = p2.y + t * ny;
 
             QuadRenderer.updateCornerPosition(p1Idx, pts[p1Idx].x, pts[p1Idx].y, canvas.width, canvas.height);
             QuadRenderer.updateCornerPosition(p2Idx, pts[p2Idx].x, pts[p2Idx].y, canvas.width, canvas.height);
