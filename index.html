@@ -10,47 +10,10 @@
     <link rel="apple-touch-icon" sizes="180x180" href="favicon-512.png">
     <link rel="icon" type="image/png" sizes="512x512" href="favicon-512.png">
 
-    <script>
-        (function () {
-            try {
-                var theme = localStorage.getItem('theme');
-                if (!theme) {
-                    theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-                }
-                document.documentElement.setAttribute('data-theme', theme);
-            } catch (e) { }
-        })();
-    </script>
-
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
-    <header class="header">
-        <div class="header-content">
-            <div class="header-left">
-                <div class="logo" role="img" aria-label="PerspectiveFix Logo">
-                    <span class="icon icon-logo"></span>
-                </div>
-                <div class="brand">
-                    <h1>PerspectiveFix</h1>
-                    <p>Free Perspective Correction Tool</p>
-                </div>
-            </div>
-            <div class="header-right">
-                <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle theme"
-                    title="Toggle theme (T)">
-                    <span class="icon icon-moon"></span>
-                    <span class="icon icon-sun"></span>
-                </button>
-                <a href="https://www.buymeacoffee.com/oathanrex" target="_blank" rel="noopener" class="coffee-btn">
-                    <span class="icon icon-coffee"></span>
-                    <span class="text">Buy me a coffee</span>
-                </a>
-            </div>
-        </div>
-    </header>
-
     <main class="main">
         <div id="uploadZone" class="upload-zone" role="button" tabindex="0"
             aria-label="Upload image for perspective correction">
@@ -70,16 +33,6 @@
                         <span class="icon icon-new-image"></span>
                         <span class="btn-text">New</span>
                     </button>
-                    <button id="resetBtn" class="btn btn-sec" type="button" title="Reset corners (R)"
-                        aria-label="Reset corner positions">
-                        <span class="icon icon-reset"></span>
-                        <span class="btn-text">Reset</span>
-                    </button>
-                    <button id="rotateBtn" class="btn btn-sec" type="button" title="Rotate 90° (Q)"
-                        aria-label="Rotate image 90 degrees">
-                        <span class="icon icon-rotate"></span>
-                        <span class="btn-text">Rotate</span>
-                    </button>
                     <button id="addCropBtn" class="btn btn-sec" type="button" title="Add another crop (A)"
                         aria-label="Add another crop region">
                         <span class="icon icon-new-image"></span>
@@ -87,17 +40,10 @@
                     </button>
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <label for="formatSelect"
-                        style="font-size: 0.875rem; color: var(--text-tertiary); display: none;">Format:</label>
-                    <select id="formatSelect" class="format-select"
-                        aria-label="Select output format: PNG for lossless quality or JPG for smaller file size">
-                        <option value="png">PNG (Lossless)</option>
-                        <option value="jpg">JPG (Smaller)</option>
-                    </select>
-                    <button id="downloadBtn" class="btn btn-pri" type="button" title="Download corrected image (Ctrl+S)"
-                        aria-label="Download corrected image">
+                    <button id="downloadBtn" class="btn btn-pri" type="button" title="Crop and download image (Ctrl+S)"
+                        aria-label="Crop and download image">
                         <span id="downloadIcon" class="icon icon-download"></span>
-                        <span id="downloadText" class="btn-text">Download</span>
+                        <span id="downloadText" class="btn-text">Crop</span>
                     </button>
                 </div>
             </div>
@@ -108,8 +54,7 @@
                 <div class="panel panel-edit" id="editPanel">
                     <div class="panel-header">
                         <div class="panel-title">
-                            <span class="icon icon-cursor-drag"></span>
-                            <span>Drag the corners to mark what should be straight</span>
+                            <span id="origFileName"></span>
                         </div>
                         <div class="panel-actions">
                             <span id="origDim" class="dim-badge" aria-label="Original image dimensions">—</span>

@@ -54,13 +54,6 @@
             supportsOffscreenCanvas: _supportsOffscreenCanvas,
             supportsImageBitmap: _supportsImageBitmap,
 
-            // Quality settings
-            jpgQuality: Object.freeze({
-                large: 0.98,
-                medium: 0.95,
-                small: 0.92
-            }),
-
             // Corner labels for accessibility
             CORNER_LABELS: Object.freeze(['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left']),
 
@@ -172,11 +165,11 @@
         var listeners = [];
 
         var elementIds = [
-            'themeBtn', 'uploadZone', 'fileInput', 'errorMsg',
+            'uploadZone', 'fileInput', 'errorMsg',
             'editor', 'srcCanvas',
-            'quadSvg', 'corners', 'origDim',
-            'newBtn', 'resetBtn', 'rotateBtn', 'addCropBtn', 'downloadBtn',
-            'downloadIcon', 'downloadText', 'formatSelect', 'origContainer',
+            'quadSvg', 'corners', 'origDim', 'origFileName',
+            'newBtn', 'addCropBtn', 'downloadBtn',
+            'downloadIcon', 'downloadText', 'origContainer',
             'canvasWrap', 'cropTabs', 'previewCards', 'zoomLens',
             'editPanel', 'fullscreenBtn'
         ];
@@ -433,59 +426,6 @@
             announce: announce,
             updateCornerAria: updateCornerAria,
             destroy: destroy
-        });
-    })();
-
-    // ============================================
-    // MODULE: Theme Manager
-    // ============================================
-    var Theme = (function () {
-        var STORAGE_KEY = 'theme';
-
-        function init() {
-            var saved = getSaved();
-            if (saved) {
-                apply(saved);
-            }
-        }
-
-        function getSaved() {
-            try {
-                return localStorage.getItem(STORAGE_KEY);
-            } catch (e) {
-                return null;
-            }
-        }
-
-        function apply(theme) {
-            document.documentElement.setAttribute('data-theme', theme);
-        }
-
-        function save(theme) {
-            try {
-                localStorage.setItem(STORAGE_KEY, theme);
-            } catch (e) {
-                // localStorage not available
-            }
-        }
-
-        function toggle() {
-            var current = getCurrent();
-            var next = current === 'dark' ? 'light' : 'dark';
-            apply(next);
-            save(next);
-            A11y.announce('Theme changed to ' + next + ' mode');
-            return next;
-        }
-
-        function getCurrent() {
-            return document.documentElement.getAttribute('data-theme') || 'light';
-        }
-
-        return Object.freeze({
-            init: init,
-            toggle: toggle,
-            getCurrent: getCurrent
         });
     })();
 
@@ -1090,6 +1030,13 @@
             }
         }
 
+        function updateFileName(name) {
+            var label = DOM.get('origFileName');
+            if (label) {
+                label.textContent = name || '';
+            }
+        }
+
         // ---- Crop tabs + per-crop preview cards ----
         var cards = {}; // cropId -> { card, canvas, loading, dim }
 
@@ -1224,27 +1171,23 @@
             var btn = DOM.get('downloadBtn');
             var icon = DOM.get('downloadIcon');
             var text = DOM.get('downloadText');
-            var format = DOM.get('formatSelect');
 
             switch (state) {
                 case 'processing':
                     if (btn) btn.disabled = true;
-                    if (format) format.disabled = true;
                     if (icon) icon.classList.add('spin');
                     if (text) text.textContent = 'Processing...';
                     break;
                 case 'disabled':
                     if (btn) btn.disabled = true;
-                    if (format) format.disabled = false;
                     if (icon) icon.classList.remove('spin');
-                    if (text) text.textContent = 'Download';
+                    if (text) text.textContent = 'Crop';
                     break;
                 case 'ready':
                 default:
                     if (btn) btn.disabled = false;
-                    if (format) format.disabled = false;
                     if (icon) icon.classList.remove('spin');
-                    if (text) text.textContent = 'Download';
+                    if (text) text.textContent = 'Crop';
                     break;
             }
         }
@@ -1277,6 +1220,7 @@
             hideLoading: hideLoading,
             setLoadingTarget: setLoadingTarget,
             updateDimensions: updateDimensions,
+            updateFileName: updateFileName,
             showEditor: showEditor,
             showHero: showHero,
             setDownloadState: setDownloadState,
@@ -1870,7 +1814,7 @@
             return inProgress;
         }
 
-        function startDownload(canvasObj, format, options) {
+        function startDownload(canvasObj, options) {
             options = options || {};
             if (inProgress && !options.skipThrottle) {
                 return Promise.reject(new Error('Download in progress'));
@@ -1887,29 +1831,13 @@
             inProgress = true;
             UI.setDownloadState('processing');
 
-            format = format || 'png';
-            var extension = format === 'jpg' ? 'jpg' : 'png';
-            var mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png';
-
             var origName = FileHandler.getFileName() || 'image';
             var lastDotIdx = origName.lastIndexOf('.');
             var baseName = lastDotIdx !== -1 ? origName.substring(0, lastDotIdx) : origName;
             var suffix = options.suffix || '';
-            var filename = baseName + '-CORRECTED' + suffix + '.' + extension;
+            var filename = baseName + '-CORRECTED' + suffix + '.png';
 
-            var quality;
-            if (format === 'jpg') {
-                var totalPixels = canvasObj.width * canvasObj.height;
-                if (totalPixels > 10000000) {
-                    quality = Config.jpgQuality.large;
-                } else if (totalPixels > 5000000) {
-                    quality = Config.jpgQuality.medium;
-                } else {
-                    quality = Config.jpgQuality.small;
-                }
-            }
-
-            return CanvasManager.toBlob(canvasObj, mimeType, quality)
+            return CanvasManager.toBlob(canvasObj, 'image/png')
                 .then(function (blob) {
                     return triggerDownload(blob, filename);
                 })
@@ -2125,6 +2053,7 @@
 
             // Update dimension display
             UI.updateDimensions({ w: origImg.width, h: origImg.height });
+            UI.updateFileName(FileHandler.getFileName());
 
             // Start with a single crop
             var dims = CanvasManager.getSourceDimensions();
@@ -2142,25 +2071,6 @@
         }
 
         // Reset the active crop's corners to the default rectangle.
-        function resetCorners() {
-            var dims = CanvasManager.getSourceDimensions();
-
-            // Ensure we have valid dimensions
-            if (dims.width < Config.MIN_CANVAS_SIZE || dims.height < Config.MIN_CANVAS_SIZE) {
-                console.warn('Canvas dimensions too small:', dims);
-                return;
-            }
-
-            if (!activeCrop()) return;
-            activeCrop().pts = Geometry.getDefaultCorners(dims.width, dims.height);
-
-            UI.hideError();
-            renderAll();
-            updatePreview();
-
-            A11y.announce('Corner positions reset');
-        }
-
         function renderAll() {
             var dims = CanvasManager.getSourceDimensions();
 
@@ -2706,8 +2616,6 @@
                 return;
             }
 
-            var formatSelect = DOM.get('formatSelect');
-            var format = formatSelect ? formatSelect.value : 'png';
             var multi = valid.length > 1;
 
             UI.setDownloadState('processing');
@@ -2718,7 +2626,7 @@
                 chain = chain.then(function () {
                     return processFullRes(item.dims).then(function (canvasObj) {
                         var suffix = multi ? '-crop-' + (item.index + 1) : '';
-                        return DownloadManager.startDownload(canvasObj, format, {
+                        return DownloadManager.startDownload(canvasObj, {
                             suffix: suffix,
                             skipThrottle: k > 0
                         }).then(function () {
@@ -2790,101 +2698,14 @@
             DownloadManager.reset();
         }
 
-        function rotateImage() {
-            if (!origImg) return;
-
-            var oldW = origImg.width;
-            var oldH = origImg.height;
-
-            // Create temporary canvas for 90° clockwise rotation
-            var tempCanvas = document.createElement('canvas');
-            tempCanvas.width = oldH;
-            tempCanvas.height = oldW;
-            var tempCtx = tempCanvas.getContext('2d');
-
-            tempCtx.translate(oldH, 0);
-            tempCtx.rotate(Math.PI / 2);
-            tempCtx.drawImage(origImg, 0, 0);
-
-            var rotatedImg = new Image();
-            rotatedImg.onload = function () {
-                // Convert corners from display space to original image space
-                var oldDisplayDims = CanvasManager.getSourceDimensions();
-                var oldScaleX = oldW / oldDisplayDims.width;
-                var oldScaleY = oldH / oldDisplayDims.height;
-
-                // Update image references
-                origImg = rotatedImg;
-                origData = CanvasManager.getImageData(rotatedImg);
-
-                // Recalculate display size
-                var displaySize = calculateDisplaySize(origImg);
-                scale = displaySize.scale;
-
-                // Draw rotated source
-                CanvasManager.drawSource(origImg, displaySize.width, displaySize.height);
-                QuadRenderer.setSize(displaySize.width, displaySize.height);
-
-                var newW = rotatedImg.width;
-                var newH = rotatedImg.height;
-                var newScaleX = displaySize.width / newW;
-                var newScaleY = displaySize.height / newH;
-
-                // Remap every crop's corners through the rotation
-                for (var c = 0; c < crops.length; c++) {
-                    var pts = crops[c].pts;
-
-                    var origPts = [];
-                    for (var i = 0; i < pts.length; i++) {
-                        origPts.push({ x: pts[i].x * oldScaleX, y: pts[i].y * oldScaleY });
-                    }
-
-                    // Apply 90° CW rotation: (x, y) -> (oldH - y, x)
-                    var rotatedPts = [];
-                    for (var j = 0; j < origPts.length; j++) {
-                        rotatedPts.push({ x: oldH - origPts[j].y, y: origPts[j].x });
-                    }
-
-                    // Reorder corners: BL->TL, TL->TR, TR->BR, BR->BL
-                    var reorderedPts = [rotatedPts[3], rotatedPts[0], rotatedPts[1], rotatedPts[2]];
-
-                    var newPts = [];
-                    for (var k = 0; k < reorderedPts.length; k++) {
-                        newPts.push({
-                            x: Utils.clamp(reorderedPts[k].x * newScaleX, 0, displaySize.width),
-                            y: Utils.clamp(reorderedPts[k].y * newScaleY, 0, displaySize.height)
-                        });
-                    }
-                    crops[c].pts = newPts;
-                }
-
-                // Update dimension display
-                UI.updateDimensions({ w: newW, h: newH });
-
-                // Re-render
-                renderAll();
-                refreshAllPreviews();
-
-                A11y.announce('Image rotated 90 degrees clockwise');
-            };
-
-            rotatedImg.src = tempCanvas.toDataURL();
-
-            // Clean up temp canvas
-            tempCanvas.width = 0;
-            tempCanvas.height = 0;
-        }
-
         return Object.freeze({
             init: init,
             setup: setup,
-            resetCorners: resetCorners,
             download: download,
             handleResize: handleResize,
             isActive: isActive,
             cancelDrag: cancelDrag,
             reset: reset,
-            rotateImage: rotateImage,
             addCrop: addCrop,
             removeCrop: removeCrop,
             setActiveCrop: setActiveCrop
@@ -2896,7 +2717,6 @@
     // ============================================
     var EventBindings = (function () {
         function init() {
-            bindTheme();
             bindFileUpload();
             bindButtons();
             bindKeyboard();
@@ -2988,15 +2808,6 @@
             });
         }
 
-        function bindTheme() {
-            var themeBtn = DOM.get('themeBtn');
-            if (themeBtn) {
-                DOM.on(themeBtn, 'click', function () {
-                    Theme.toggle();
-                });
-            }
-        }
-
         function bindFileUpload() {
             var uploadZone = DOM.get('uploadZone');
             var fileInput = DOM.get('fileInput');
@@ -3077,8 +2888,6 @@
 
         function bindButtons() {
             var newBtn = DOM.get('newBtn');
-            var resetBtn = DOM.get('resetBtn');
-            var rotateBtn = DOM.get('rotateBtn');
             var addCropBtn = DOM.get('addCropBtn');
             var downloadBtn = DOM.get('downloadBtn');
             var fileInput = DOM.get('fileInput');
@@ -3090,21 +2899,9 @@
                 });
             }
 
-            if (resetBtn) {
-                DOM.on(resetBtn, 'click', function () {
-                    Editor.resetCorners();
-                });
-            }
-
             if (addCropBtn) {
                 DOM.on(addCropBtn, 'click', function () {
                     Editor.addCrop();
-                });
-            }
-
-            if (rotateBtn) {
-                DOM.on(rotateBtn, 'click', function () {
-                    Editor.rotateImage();
                 });
             }
 
@@ -3124,29 +2921,11 @@
                 var tagName = activeEl ? activeEl.tagName : '';
                 var isInput = tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT';
 
-                if (key.toLowerCase() === 't' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
-                    e.preventDefault();
-                    Theme.toggle();
-                    return;
-                }
-
                 if (!Editor.isActive()) return;
 
                 if ((e.ctrlKey || e.metaKey) && key.toLowerCase() === 's') {
                     e.preventDefault();
                     Editor.download();
-                    return;
-                }
-
-                if (key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
-                    e.preventDefault();
-                    Editor.resetCorners();
-                    return;
-                }
-
-                if (key.toLowerCase() === 'q' && !e.ctrlKey && !e.metaKey && !e.altKey && !isInput) {
-                    e.preventDefault();
-                    Editor.rotateImage();
                     return;
                 }
 
@@ -3238,7 +3017,6 @@
             }
 
             A11y.init();
-            Theme.init();
             Editor.init();
 
             FileHandler.onLoad(function (imageData) {
@@ -3284,7 +3062,6 @@
                 Utils: Utils,
                 DOM: DOM,
                 A11y: A11y,
-                Theme: Theme,
                 CanvasManager: CanvasManager,
                 WorkerManager: WorkerManager,
                 Geometry: Geometry,
